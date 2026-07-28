@@ -1,0 +1,140 @@
+name: 构建发布release和docker
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本号 (例如 v1.0.1)，留空则只上传 Artifact 不发布'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            artifact: helm-linux-amd64
+          - goos: linux
+            goarch: arm64
+            artifact: helm-linux-arm64
+
+    steps:
+      # 1. 拉取代码
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. 安装 Node.js，构建 Vue 前端
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build Frontend
+        run: |
+          cd frontend
+          npm install
+          npm run build
+
+      # 3. 安装 Go，编译后端
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: false
+
+      - name: Tidy Go modules
+        run: go mod tidy
+
+      - name: Set version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Backend
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          go build -ldflags="-s -w -X main.Version=${{ steps.ver.outputs.version }}" -o ${{ matrix.artifact }} .
+
+      # 4. 始终上传 Artifact
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  # 5. 有版本号时：发布 Release + 构建推送 Docker 镜像
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    # tag 触发 或 手动填了版本号 才执行
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.version != '')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 确定版本号（tag触发用tag名，手动触发用输入值）
+      - name: Set version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
+      # 下载所有平台的二进制
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+
+      # 发布 GitHub Release
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.version }}
+          name: Helm ${{ steps.ver.outputs.version }}
+          files: |
+            helm-linux-amd64/helm-linux-amd64
+            helm-linux-arm64/helm-linux-arm64
+
+      # 构建并推送 Docker 镜像
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Copy binaries for Docker
+        run: |
+          cp helm-linux-amd64/helm-linux-amd64 helm-linux-amd64-bin
+          cp helm-linux-arm64/helm-linux-arm64 helm-linux-arm64-bin
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build & Push Docker image (multi-arch)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/helm:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/helm:${{ steps.ver.outputs.version }}
