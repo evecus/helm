@@ -1,9 +1,5 @@
-name: 构建发布release和docker
-
+name: build
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       version:
