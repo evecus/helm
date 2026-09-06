@@ -7,31 +7,32 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
-	"gopkg.in/yaml.v3"
 )
 
-// 说明:apps 与 settings 已迁移至 gob 文件持久化(见 store.go)。
-// 仅 config.yaml(端口/密钥/用户等启动前置配置)及 uploads/ 图标文件继续存于文件系统。
+// 说明:全部业务数据(主配置/apps/settings)已统一持久化到 bbolt 数据库
+// (helm.db,内容 AES-256-GCM 加密,见 db.go)。
+// 端口不在数据库中:由启动参数 --port 指定,缺省 3088。
+// 仅 uploads/ 图标文件继续存于文件系统。
 
-// ── config.yaml：端口、密钥、用户、公开模式 ──────────────────────
+// ── 主配置:密钥、用户、公开模式(不含端口) ──────────────────────
 
 type User struct {
-	Username string `yaml:"username" json:"username"`
-	Password string `yaml:"password" json:"-"`
-	Nickname string `yaml:"nickname" json:"nickname"`
-	IsAdmin  bool   `yaml:"is_admin" json:"is_admin"`
+	Username string `json:"username"`
+	Password string `json:"-"`
+	Nickname string `json:"nickname"`
+	IsAdmin  bool   `json:"is_admin"`
 }
 
 type MainConfig struct {
-	Port             int       `yaml:"port"`
-	JWTSecret        string    `yaml:"jwt_secret"`
-	PublicMode       bool      `yaml:"public_mode"`
-	CacheIntervalSec int       `yaml:"cache_interval_sec"` // 后台缓存刷新间隔（秒），默认 30
-	Users            []User    `yaml:"users"`
-	CreatedAt        time.Time `yaml:"created_at"`
+	JWTSecret        string    `json:"jwt_secret"`
+	PublicMode       bool      `json:"public_mode"`
+	CacheIntervalSec int       `json:"cache_interval_sec"` // 后台缓存刷新间隔（秒），默认 30
+	Users            []User    `json:"users"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
-// ── apps(导航条目,见 store.go) ──────────────────────────────────
+// ── apps(导航条目) ─────────────────────────────────────────────
+
 type AppItem struct {
 	ID        string `json:"id"`
 	Title     string `json:"title"`
@@ -45,7 +46,7 @@ type AppItem struct {
 	Order     int    `json:"order"`
 }
 
-// ── settings(面板配置,见 store.go) ──────────────────────────────
+// ── settings(面板配置) ──────────────────────────────────────────
 
 type ClockDisplay struct {
 	ShowTime    bool `json:"show_time"`
@@ -110,9 +111,6 @@ var (
 	DataDir  = "data"
 )
 
-// configPath 相对于 DataDir，直接位于数据目录根下（不再用 config/ 子目录包裹）
-func configPath() string { return DataDir + "/config.yaml" }
-
 // SetDataDir 在 Init 之前调用，覆盖默认数据目录
 func SetDataDir(dir string) {
 	DataDir = dir
@@ -123,62 +121,48 @@ func SetDataDir(dir string) {
 func Init() error {
 	os.MkdirAll(DataDir, 0755)
 	os.MkdirAll(DataDir+"/uploads", 0755)
-	if err := loadMain(); err != nil {
+	if err := openDB(); err != nil {
 		return err
 	}
-	if err := loadStore(); err != nil {
+	if err := loadAll(); err != nil {
 		return err
 	}
-	return loadSettings()
+	if Main == nil {
+		if err := createDefaultMain(); err != nil {
+			return err
+		}
+	}
+	if Apps == nil {
+		Apps = []AppItem{}
+	}
+	if err := loadSettings(); err != nil {
+		return err
+	}
+	return persistAll()
 }
 
-// ── helm.yaml ────────────────────────────────────────────────
-
-func loadMain() error {
-	if _, err := os.Stat(configPath()); os.IsNotExist(err) {
-		return createDefaultMain()
-	}
-	data, err := os.ReadFile(configPath())
-	if err != nil {
-		return err
-	}
-	Main = &MainConfig{}
-	return yaml.Unmarshal(data, Main)
-}
+// ── 主配置默认值 ────────────────────────────────────────────────
 
 func createDefaultMain() error {
 	secret := make([]byte, 32)
 	rand.Read(secret)
 	hash, _ := bcrypt.GenerateFromPassword([]byte("admin"), bcrypt.DefaultCost)
 	Main = &MainConfig{
-		Port:       3088,
 		JWTSecret:  hex.EncodeToString(secret),
 		PublicMode: false,
 		Users:      []User{{Username: "admin", Password: string(hash), Nickname: "Admin", IsAdmin: true}},
 		CreatedAt:  time.Now(),
 	}
-	return saveMain()
+	return nil
 }
 
-func saveMain() error {
-	os.MkdirAll(DataDir, 0755)
-	data, err := yaml.Marshal(Main)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(configPath(), data, 0600)
-}
+// ── 持久化入口(全量写回 bbolt) ─────────────────────────────────
 
-func SaveMain() error { return saveMain() }
+func SaveMain() error     { return persistAll() }
+func SaveApps() error     { return persistAll() }
+func SaveSettings() error { return persistAll() }
 
-// ── apps(gob 持久化) ────────────────────────────────────────────
-
-// saveApps 将当前内存中的 Apps 全量落盘到 gob 文件(连同 settings 一起)。
-func saveApps() error { return persistStore() }
-
-func SaveApps() error { return saveApps() }
-
-// ── settings(gob 持久化,整份 PanelSettings 与 apps 同文件存储) ──
+// ── settings 默认值 ──────────────────────────────────────────────
 
 func loadSettings() error {
 	if Settings == nil {
@@ -215,16 +199,9 @@ func loadSettings() error {
 				ShowLunar: false, ShowSeconds: false,
 			},
 		}
-		return saveSettings()
 	}
 	return nil
 }
-
-func saveSettings() error {
-	return persistStore()
-}
-
-func SaveSettings() error { return saveSettings() }
 
 // ── User helpers ──────────────────────────────────────────────────
 

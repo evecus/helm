@@ -30,7 +30,8 @@ var assetsFS embed.FS
 
 func main() {
 	// ── 命令行参数 ────────────────────────────────────────────────
-	flagPort := flag.Int("port", 0, "HTTP listening port (overrides config file)")
+	// 端口只由命令行决定,不再持久化:--port 缺省为 3088
+	flagPort := flag.Int("port", 3088, "HTTP listening port (default 3088)")
 	flagDir := flag.String("dir", "", "Data directory path (default: ./data next to executable)")
 	flag.Parse()
 
@@ -62,10 +63,7 @@ func main() {
 		log.Fatalf("Failed to init config: %v", err)
 	}
 
-	// --port 优先级高于配置文件
-	if *flagPort != 0 {
-		config.Main.Port = *flagPort
-	}
+	listenPort := *flagPort
 
 	handler.AppVersion = Version
 
@@ -79,7 +77,7 @@ func main() {
 		},
 	)
 
-	fmt.Printf("\n🚀 Helm running on http://0.0.0.0:%d\n", config.Main.Port)
+	fmt.Printf("\n🚀 Helm running on http://0.0.0.0:%d\n", listenPort)
 
 	// 自定义 Logger：只打印 4xx/5xx 错误，过滤正常访问日志
 	r := gin.New()
@@ -201,7 +199,7 @@ func main() {
 		c.Data(http.StatusOK, "text/html; charset=utf-8", indexFile)
 	})
 
-	addr := fmt.Sprintf("0.0.0.0:%d", config.Main.Port)
+	addr := fmt.Sprintf("0.0.0.0:%d", listenPort)
 	if err := r.Run(addr); err != nil {
 		log.Fatal(err)
 	}

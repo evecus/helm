@@ -6,8 +6,8 @@ require (
 	github.com/gin-gonic/gin v1.9.1
 	github.com/golang-jwt/jwt/v5 v5.2.0
 	github.com/shirou/gopsutil/v3 v3.23.12
+	go.etcd.io/bbolt v1.3.10
 	golang.org/x/crypto v0.17.0
-	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -40,4 +40,5 @@ require (
 	golang.org/x/sys v0.16.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 	google.golang.org/protobuf v1.30.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
