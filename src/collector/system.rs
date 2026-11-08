@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::ffi::CStr;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use sysinfo::{Components, Disks, Networks, System};
+use sysinfo::{Disks, Networks, System};
 
 // ── 数据结构（json 字段与 Go 版完全一致） ────────────────────────
 
@@ -282,10 +282,7 @@ fn connection_count() -> i32 {
 
 // ── 采集入口 ──────────────────────────────────────────────────────
 
-pub fn get_system_info() -> SystemInfo {
-    let mut sys = System::new();
-    sys.refresh_cpu_all();
-
+fn build_system_info(sys: &System) -> SystemInfo {
     let (platform, platform_version) = os_release();
     let uptime = System::uptime();
     let cpu_arch = System::cpu_arch();
@@ -295,6 +292,9 @@ pub fn get_system_info() -> SystemInfo {
         "arm" => "arm",
         other => other,
     };
+    // 物理核心数不会变化，缓存避免每次采集都重新解析 /proc/cpuinfo
+    static PHYS_CORES: OnceLock<usize> = OnceLock::new();
+    let cores = *PHYS_CORES.get_or_init(|| System::physical_core_count().unwrap_or(0));
 
     let mut si = SystemInfo {
         hostname: System::host_name().unwrap_or_default(),
@@ -311,7 +311,7 @@ pub fn get_system_info() -> SystemInfo {
             .first()
             .map(|c| c.brand().to_string())
             .unwrap_or_default(),
-        cpu_cores: System::physical_core_count().unwrap_or(0) as i32,
+        cpu_cores: cores as i32,
         cpu_threads: sys.cpus().len() as i32,
         ..Default::default()
     };
@@ -337,13 +337,7 @@ pub fn get_system_info() -> SystemInfo {
     si
 }
 
-pub fn get_cpu_stats() -> CPUStats {
-    // cpu.Percent(300ms, false) + cpu.Percent(0, true)：两次采样间隔 300ms
-    let mut sys = System::new();
-    sys.refresh_cpu_all();
-    std::thread::sleep(Duration::from_millis(300));
-    sys.refresh_cpu_all();
-
+fn build_cpu_stats(sys: &System) -> CPUStats {
     let load = System::load_average();
     CPUStats {
         usage_percent: sys.global_cpu_usage() as f64,
@@ -359,9 +353,7 @@ pub fn get_cpu_stats() -> CPUStats {
     }
 }
 
-pub fn get_memory_stats() -> MemoryStats {
-    let mut sys = System::new();
-    sys.refresh_memory();
+fn build_memory_stats(sys: &System) -> MemoryStats {
     let (cached, buffers) = meminfo_cached_buffers();
 
     let total = sys.total_memory();
@@ -389,6 +381,31 @@ pub fn get_memory_stats() -> MemoryStats {
         cached,
         buffers,
     }
+}
+
+// 保留 Go 版的独立采集函数（当前未注册路由），供单独调用。
+#[allow(dead_code)]
+pub fn get_system_info() -> SystemInfo {
+    let mut sys = System::new();
+    sys.refresh_cpu_all();
+    build_system_info(&sys)
+}
+
+#[allow(dead_code)]
+pub fn get_cpu_stats() -> CPUStats {
+    // cpu.Percent(300ms, false) + cpu.Percent(0, true)：两次采样间隔 300ms
+    let mut sys = System::new();
+    sys.refresh_cpu_all();
+    std::thread::sleep(Duration::from_millis(300));
+    sys.refresh_cpu_all();
+    build_cpu_stats(&sys)
+}
+
+#[allow(dead_code)]
+pub fn get_memory_stats() -> MemoryStats {
+    let mut sys = System::new();
+    sys.refresh_memory();
+    build_memory_stats(&sys)
 }
 
 pub fn get_disk_stats() -> DiskStats {
@@ -519,18 +536,73 @@ pub fn get_network_stats() -> NetworkStats {
     }
 }
 
+/// 对应 Go 版 GetTemperatures()：读 /sys/class/thermal/thermal_zone0..9。
+/// ARM 板子（RK3566 等）的温度只暴露在 thermal_zone，sysinfo 的 Components
+/// 读的是 hwmon，在这类设备上恒为空，因此这里按 Go 版原样实现。
+/// root 参数化仅为单元测试可注入模拟目录，生产固定传 /sys/class/thermal。
+fn temperatures_from(root: &str) -> Vec<Temperature> {
+    let mut temps = Vec::new();
+    for i in 0..10 {
+        let base = format!("{}/thermal_zone{}", root, i);
+        let data = match std::fs::read_to_string(format!("{}/temp", base)) {
+            Ok(s) => s,
+            Err(_) => break, // 与 Go 版一致：读不到就停止枚举
+        };
+        let millideg: f64 = data.trim().parse().unwrap_or(0.0);
+        if millideg == 0.0 {
+            continue;
+        }
+        let sensor = std::fs::read_to_string(format!("{}/type", base))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        let sensor = if sensor.is_empty() {
+            format!("zone{}", i)
+        } else {
+            sensor
+        };
+        temps.push(Temperature {
+            sensor,
+            temperature: millideg / 1000.0,
+        });
+    }
+    temps
+}
+
 pub fn get_temperatures() -> Vec<Temperature> {
-    let components = Components::new_with_refreshed_list();
-    components
-        .list()
-        .iter()
-        .filter_map(|c| {
-            c.temperature().map(|t| Temperature {
-                sensor: c.label().to_string(),
-                temperature: t as f64,
-            })
-        })
-        .collect()
+    temperatures_from("/sys/class/thermal")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thermal_zone_parsing_matches_go() {
+        let root = std::env::temp_dir().join(format!("helm-thermal-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let mk = |i: u32, temp: &str, ty: Option<&str>| {
+            let z = root.join(format!("thermal_zone{}", i));
+            std::fs::create_dir_all(&z).unwrap();
+            std::fs::write(z.join("temp"), temp).unwrap();
+            if let Some(t) = ty {
+                std::fs::write(z.join("type"), t).unwrap();
+            }
+        };
+        mk(0, "45123\n", Some("cpu-thermal\n")); // 正常：毫度 → 度，去空白
+        mk(1, "38000", None); // 无 type → 回退 zone1
+        mk(2, "0", None); // 0 → 跳过
+        // zone3 不存在 → break，后续不再枚举
+
+        let t = temperatures_from(root.to_str().unwrap());
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].sensor, "cpu-thermal");
+        assert!((t[0].temperature - 45.123).abs() < 1e-6);
+        assert_eq!(t[1].sensor, "zone1");
+        assert!((t[1].temperature - 38.0).abs() < 1e-6);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 /// Go 版额外提供但未注册路由的辅助函数，保留等价实现。
@@ -565,11 +637,19 @@ pub fn get_crontabs() -> Vec<String> {
 }
 
 pub fn collect_all() -> MetricsSnapshot {
+    // 整个快照复用同一个 System：只做一次 /proc/meminfo 与一次 300ms CPU 采样窗口，
+    // 避免各子函数各自 System::new() + refresh_cpu_all() 带来的重复 /proc/cpuinfo 解析。
+    let mut sys = System::new();
+    sys.refresh_memory();
+    sys.refresh_cpu_all();
+    std::thread::sleep(Duration::from_millis(300));
+    sys.refresh_cpu_all();
+
     MetricsSnapshot {
         timestamp: crate::auth::now_unix(),
-        system: get_system_info(),
-        cpu: get_cpu_stats(),
-        memory: get_memory_stats(),
+        system: build_system_info(&sys),
+        cpu: build_cpu_stats(&sys),
+        memory: build_memory_stats(&sys),
         disk: get_disk_stats(),
         network: get_network_stats(),
         temperatures: get_temperatures(),

@@ -1,7 +1,7 @@
 //! 进程采集，对应 Go 版 internal/collector/process.go（gopsutil/process → sysinfo）。
 
 use serde::Serialize;
-use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, Users};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind, Users};
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ProcessInfo {
@@ -34,11 +34,17 @@ fn status_str(s: ProcessStatus) -> &'static str {
 pub fn get_processes(sort_by: &str, sort_dir: &str, limit: i32) -> Result<Vec<ProcessInfo>, String> {
     let mut sys = System::new();
     sys.refresh_memory();
-    // gopsutil 会列出主进程（不含线程），且需要 user/cmd 字段
-    let kind = ProcessRefreshKind::everything().without_tasks();
-    // sysinfo 的 cpu_usage 需要两次刷新之间的间隔才有意义
-    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind.clone());
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // 只取 Go 版实际用到的字段（累计 CPU 时间 / RSS / user / cmdline）。
+    // everything() 还会额外读 environ、exe、cwd、root、disk_usage，
+    // 在进程数多的机器上开销大得多。
+    let kind = ProcessRefreshKind::nothing()
+        .with_cpu()
+        .with_memory()
+        .with_user(UpdateKind::OnlyIfNotSet)
+        .with_cmd(UpdateKind::OnlyIfNotSet)
+        .without_tasks();
+    // gopsutil 的 p.CPUPercent() 是「累计 CPU 时间 / 进程运行时长」，
+    // 属生命周期平均值，不需要两次刷新 + sleep，一次刷新即可。
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
 
     let total_mem = sys.total_memory() as f64;
@@ -69,7 +75,16 @@ pub fn get_processes(sort_by: &str, sort_dir: &str, limit: i32) -> Result<Vec<Pr
                 pid: p.pid().as_u32() as i32,
                 name: p.name().to_string_lossy().into_owned(),
                 username,
-                cpu_percent: p.cpu_usage() as f64,
+                // 对应 gopsutil p.CPUPercent()：累计 CPU 秒数 / 已运行墙钟秒数。
+                // 不再用 sysinfo 的瞬时窗口，避免采集时把 helm 自己算成高占用。
+                cpu_percent: {
+                    let run = p.run_time() as f64;
+                    if run > 0.0 {
+                        (p.accumulated_cpu_time() as f64 / 1000.0) / run * 100.0
+                    } else {
+                        0.0
+                    }
+                },
                 mem_percent,
                 mem_rss: rss,
                 status: status_str(p.status()).to_string(),
