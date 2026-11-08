@@ -1,0 +1,51 @@
+[package]
+name = "helm"
+version = "0.1.0"
+edition = "2021"
+description = "Helm - self-hosted homelab dashboard (Rust port of the Go version)"
+license = "MIT"
+
+[[bin]]
+name = "helm"
+path = "src/main.rs"
+
+[dependencies]
+# ── HTTP server ────────────────────────────────────────────────────
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7", features = ["multipart"] }
+tower-http = { version = "0.5", features = ["catch-panic"] }
+
+# ── Serialization / embedding ──────────────────────────────────────
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rust-embed = { version = "8", features = ["debug-embed"] }
+mime_guess = "2"
+
+# ── Crypto / auth (pure Rust: musl-static friendly) ─────────────────
+aes-gcm = "0.10"
+rand = "0.8"
+bcrypt = "0.15"
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+
+# ── System metrics (replaces Go's gopsutil) ─────────────────────────
+sysinfo = "0.38.4"
+
+# ── Persistence (replaces Go's bbolt) ───────────────────────────────
+redb = "4.5.0"
+
+# ── Process / misc ─────────────────────────────────────────────────
+libc = "0.2"
+os_pipe = "1"
+regex = "1"
+time = { version = "0.3", features = ["formatting"] }
+ureq = { version = "2", default-features = false, features = ["tls", "gzip"] }
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1
+strip = true
+panic = "unwind"

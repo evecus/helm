@@ -1,0 +1,6 @@
+/target
+/frontend/node_modules
+/data
+*.db
+*.key
+.DS_Store
