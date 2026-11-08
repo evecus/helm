@@ -242,8 +242,9 @@ pub fn inspect_container(id: &str) -> Result<InspectResult, String> {
 }
 
 pub fn read_compose_file(path: &str) -> Result<String, String> {
+    // Go 版：fmt.Errorf("cannot read file: %w", err)
     let out = cmd::output("cat", &[path], Duration::from_secs(5))
-        .map_err(|_| "cannot read file".to_string())?;
+        .map_err(|e| format!("cannot read file: {}", e))?;
     Ok(lossy(&out))
 }
 

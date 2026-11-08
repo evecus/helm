@@ -265,6 +265,7 @@ async fn main() {
         }
     };
 
+    collector::system::warm_cpu_baseline();
     collector::start_background_cache(state.clone());
 
     println!("\n🚀 Helm running on http://0.0.0.0:{}\n", args.port);

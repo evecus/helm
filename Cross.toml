@@ -1,4 +1,0 @@
-# cross-rs 配置：允许把版本变量透传进交叉编译容器。
-# 常规构建通过项目根目录的 VERSION 文件注入版本（容器内挂载可见）。
-[build.env]
-passthrough = ["HELM_VERSION", "RUSTFLAGS"]

@@ -337,19 +337,73 @@ fn build_system_info(sys: &System) -> SystemInfo {
     si
 }
 
+/// 对应 gopsutil cpu.Info()[0].Mhz：
+/// 先取 /proc/cpuinfo 的 "cpu MHz"，finishCPUInfo() 再用
+/// cpufreq/cpuinfo_max_freq 覆盖（kHz→MHz，>9999 再 /1000）。
+/// 是「最大频率」而非当前频率，不会随负载跳动，缓存即可。
+static CPU_MAX_FREQ: OnceLock<f64> = OnceLock::new();
+
+fn cpu_max_freq_mhz() -> f64 {
+    *CPU_MAX_FREQ.get_or_init(|| {
+        let mut mhz = 0.0_f64;
+        for line in read_file("/proc/cpuinfo").lines() {
+            if let Some((k, v)) = line.split_once(':') {
+                let key = k.trim().to_ascii_lowercase();
+                if key == "cpu mhz" || key == "clock" || key == "cpu mhz dynamic" {
+                    if let Ok(f) = v.replace("MHz", "").trim().parse::<f64>() {
+                        mhz = f;
+                        break;
+                    }
+                }
+            }
+        }
+        if let Ok(khz) = read_file("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq")
+            .trim()
+            .parse::<f64>()
+        {
+            let mut v = khz / 1000.0;
+            if v > 9999.0 {
+                v /= 1000.0;
+            }
+            mhz = v;
+        }
+        mhz
+    })
+}
+
+/// gopsutil 的 cpu.Percent(0, true) 使用包级缓存，返回「自上次调用以来」的
+/// 每核使用率（前端每 3 秒轮询，窗口约 3s），与请求内 300ms 的全局使用率
+/// 窗口不同。复用一个长期存活的 System 来保留每核累计时间基准。
+static PER_CPU_SYS: OnceLock<Mutex<System>> = OnceLock::new();
+
+fn per_core_usage_since_last_call() -> Vec<f64> {
+    let mut guard = PER_CPU_SYS
+        .get_or_init(|| {
+            let mut s = System::new();
+            s.refresh_cpu_all(); // 等价 gopsutil init() 在进程启动时记录一次基准
+            Mutex::new(s)
+        })
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    guard.refresh_cpu_all();
+    guard.cpus().iter().map(|c| c.cpu_usage() as f64).collect()
+}
+
+/// 服务启动时建立每核 CPU 时间基准，等价 gopsutil init() 在包加载时读一次 Times，
+/// 使首次请求的 per_core_usage 不是全 0。
+pub fn warm_cpu_baseline() {
+    let _ = per_core_usage_since_last_call();
+}
+
 fn build_cpu_stats(sys: &System) -> CPUStats {
     let load = System::load_average();
     CPUStats {
         usage_percent: sys.global_cpu_usage() as f64,
-        per_core_usage: sys.cpus().iter().map(|c| c.cpu_usage() as f64).collect(),
+        per_core_usage: per_core_usage_since_last_call(),
         load_avg_1: load.one as f64,
         load_avg_5: load.five as f64,
         load_avg_15: load.fifteen as f64,
-        frequency_mhz: sys
-            .cpus()
-            .first()
-            .map(|c| c.frequency() as f64)
-            .unwrap_or(0.0),
+        frequency_mhz: cpu_max_freq_mhz(),
     }
 }
 
