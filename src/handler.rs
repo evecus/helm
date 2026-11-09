@@ -810,7 +810,7 @@ fn absolutize_icon_href(href: &str, t: &IconTarget, base_dir: &str) -> Option<St
 }
 
 /// 正则捕获里取第一个有值的分组（跳过 group 0）。
-fn icon_attr(caps: &regex::Captures) -> &str {
+fn icon_attr<'h>(caps: &regex::Captures<'h>) -> &'h str {
     for i in 1..caps.len() {
         if let Some(m) = caps.get(i) {
             return m.as_str();
