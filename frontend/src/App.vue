@@ -1,13 +1,13 @@
 <template>
   <!-- Dashboard background -->
-  <div id="dashboard">
+  <div id="dashboard" @contextmenu.prevent>
     <div class="wp-bg" :style="wpStyle"></div>
     <div class="wp-overlay"></div>
 
     <div class="dash-content">
       <!-- Header -->
       <div class="dash-header" :style="headerStyle">
-        <img v-if="panelInfo.logo" class="dash-logo" :src="panelInfo.logo" alt="" />
+        <img v-if="panelInfo.logo" class="dash-logo" :src="panelInfo.logo" alt="" draggable="false" />
         <button class="icon-btn net-btn" @click="toggleNet" :title="netMode === 'lan' ? t('switchToWan') : t('switchToLan')">
           <svg v-if="netMode === 'lan'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
@@ -136,7 +136,7 @@
             >
               <div class="app-icon-wrap" :style="iconWrapStyle">
                 <template v-if="app.icon_type === 'image' && app.icon_image">
-                  <img class="app-icon-img" :src="app.icon_image" :alt="app.title"
+                  <img class="app-icon-img" :src="app.icon_image" :alt="app.title" draggable="false"
                     :style="{ borderRadius: iconBorderRadius }"
                     @error="e => { e.target.style.display='none'; e.target.nextElementSibling.style.display='flex' }" />
                   <div class="app-icon-txt" style="display:none" :style="iconTxtStyle">{{ (app.title || '?').substring(0, 2) }}</div>
@@ -458,12 +458,12 @@ onUnmounted(() => { if (clkTimer) clearInterval(clkTimer) })
 </script>
 
 <style scoped>
-#dashboard { min-height: 100vh; position: relative; }
+#dashboard { min-height: 100vh; position: relative; -webkit-touch-callout: none; }
 .wp-bg { position: fixed; inset: 0; z-index: 0; background-size: cover; background-position: center; transition: background .6s; }
 .wp-overlay { position: fixed; inset: 0; z-index: 0; background: rgba(0,0,0,.22); }
 .dash-content { position: relative; z-index: 1; min-height: 100vh; display: flex; flex-direction: column; }
 .dash-header { display: flex; justify-content: flex-start; align-items: flex-start; }
-.dash-logo { height: 34px; width: auto; border-radius: 8px; object-fit: contain; }
+.dash-logo { height: 34px; width: auto; border-radius: 8px; object-fit: contain; pointer-events: none; -webkit-touch-callout: none; }
 .net-btn { position: fixed; top: 22px; right: 100px; }
 .sys-ico-fill { width:100%; height:100%; display:flex; align-items:center; justify-content:center; border-radius:inherit; }
 .icon-btn { position: fixed; top: 22px; right: 52px; z-index: 10; width: 40px; height: 40px; border-radius: 12px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: white; font-size: 17px; transition: all var(--tr); border: 1px solid rgba(255,255,255,.25); background: rgba(255,255,255,.15); backdrop-filter: blur(12px); }
@@ -484,10 +484,11 @@ onUnmounted(() => { if (clkTimer) clearInterval(clkTimer) })
 .sort-btn { padding: 8px 18px; background: rgba(255,255,255,.88); color: #1e1b2e; border: none; border-radius: 10px; font-size: 13px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 5px; box-shadow: 0 4px 14px rgba(0,0,0,.14); transition: all var(--tr); }
 .sort-btn:hover { background: white; transform: translateY(-1px); }
 .apps-grid { display: flex; flex-wrap: wrap; justify-content: flex-start; }
-.app-card { display: flex; flex-direction: column; align-items: center; gap: 9px; cursor: pointer; user-select: none; }
-.app-icon-wrap { overflow: hidden; transition: transform var(--tr), box-shadow var(--tr); box-shadow: 0 6px 20px rgba(0,0,0,.24), 0 1px 0 rgba(255,255,255,.2) inset; }
+.app-card { display: flex; flex-direction: column; align-items: center; gap: 9px; cursor: pointer; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.app-icon-wrap { overflow: hidden; transition: transform var(--tr), box-shadow var(--tr); box-shadow: 0 6px 20px rgba(0,0,0,.24), 0 1px 0 rgba(255,255,255,.2) inset; -webkit-touch-callout: none; }
 .app-card:not(.sort-mode):hover .app-icon-wrap { transform: translateY(-6px) scale(1.07); box-shadow: 0 16px 36px rgba(0,0,0,.32), 0 1px 0 rgba(255,255,255,.2) inset; }
-.app-icon-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* 图标图片不接收指针事件：长按命中父容器，浏览器不再识别为图片而弹出自带菜单 */
+.app-icon-img { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 .app-icon-txt { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: var(--grad); font-weight: 800; color: white; text-shadow: 0 1px 4px rgba(0,0,0,.25); }
 .app-name { font-size: 12px; color: rgba(255,255,255,.96); text-align: center; font-weight: 600; text-shadow: 0 1px 4px rgba(0,0,0,.4); overflow: hidden; text-overflow: ellipsis; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; line-height: 1.35; min-height: 1.35em; }
 .app-card.sort-mode { animation: wiggle .4s ease infinite alternate; }
