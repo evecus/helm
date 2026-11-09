@@ -276,7 +276,6 @@ async fn main() {
         .route("/api/panel", get(handler::get_panel_info))
         .route("/api/apps", get(handler::get_apps))
         .route("/api/checkauth", get(handler::check_auth))
-        .route("/api/fetch-icon", get(handler::fetch_icon))
         .route("/api/version", get(handler::get_version));
 
     // ── Protected API ─────────────────────────────────────────────
@@ -289,6 +288,8 @@ async fn main() {
         .route("/apps/:id", put(handler::update_app).delete(handler::delete_app))
         .route("/apps/reorder", post(handler::reorder_apps))
         .route("/upload", post(handler::upload_image))
+        .route("/uploads", get(handler::list_uploads))
+        .route("/fetch-icon", get(handler::fetch_icon))
         .route("/upload/wallpaper", post(handler::upload_wallpaper))
         .route("/upload/logo", post(handler::upload_logo))
         .route("/settings", get(handler::get_settings).put(handler::update_settings))

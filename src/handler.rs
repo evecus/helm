@@ -429,6 +429,62 @@ pub async fn upload_logo(
     upload_file(&state, multipart, "logo", "logo_").await
 }
 
+/// 对文件名做 percent-encoding，保证含空格/中文等字符时 URL 仍可用
+/// （与 /uploads/*path 的 axum Path 自动解码对称）。
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+/// 列出 DataDir/uploads 下已上传的图片，供「选择已有图片」弹窗使用。
+/// 只返回图片扩展名，按修改时间倒序（最新在前）。
+pub async fn list_uploads(State(state): State<Arc<AppState>>) -> Response {
+    const IMAGE_EXTS: &[&str] = &[
+        "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif", "svg",
+    ];
+
+    let entries = match std::fs::read_dir(&state.uploads_dir) {
+        Ok(e) => e,
+        Err(_) => return ok(json!({ "files": [] })),
+    };
+
+    let mut files: Vec<(std::time::SystemTime, String)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        if !IMAGE_EXTS.contains(&ext.as_str()) {
+            continue;
+        }
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        let modified = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        files.push((modified, format!("/uploads/{}", url_encode(&name))));
+    }
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    let urls: Vec<String> = files.into_iter().map(|(_, u)| u).collect();
+    ok(json!({ "files": urls }))
+}
+
 // ── SETTINGS (auth required) ──────────────────────────────────────
 
 pub async fn get_settings(State(state): State<Arc<AppState>>) -> Response {
@@ -664,72 +720,295 @@ pub async fn check_auth(State(state): State<Arc<AppState>>, req: Request) -> Res
     }
 }
 
-// ── FETCH ICON ────────────────────────────────────────────────────
+// ── FETCH ICON (auth required) ────────────────────────────────────
 
-pub async fn fetch_icon(req: Request) -> Response {
-    let raw = query_param(&req, "url").unwrap_or_default();
-    let raw = raw.trim().to_string();
-    if raw.is_empty() {
-        return err(StatusCode::BAD_REQUEST, "url required");
+/// 目标站点解析结果。
+struct IconTarget {
+    page_url: String, // 首页完整 URL（含路径与 query）
+    root: String,     // scheme://authority
+    scheme: String,
+    dir: String,      // 相对 href 的基准目录
+}
+
+/// 把弹窗里填写的地址归一成可请求的 URL。
+/// 支持显式 http(s)://、协议相对 //host、裸 host:port/path。
+fn parse_icon_target(raw: &str, page_scheme: &str) -> Result<IconTarget, String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Err("bad_url".into());
     }
-    let raw = if !raw.starts_with("http://") && !raw.starts_with("https://") {
-        format!("http://{}", raw)
+    let full = if s.starts_with("//") {
+        format!("{}:{}", page_scheme, s)
+    } else if s.starts_with("http://") || s.starts_with("https://") {
+        s.to_string()
     } else {
-        raw.clone()
+        // 裸地址默认 http；http -> https 升级由重定向跟随处理
+        format!("http://{}", s)
     };
-    // 与 Go 的 url.Parse 等价：取 scheme 与 host
-    let (scheme, host) = match raw.split_once("://") {
-        Some((s, rest)) => {
-            let authority = rest.split('/').next().unwrap_or(rest);
-            (s.to_string(), authority.to_string())
-        }
-        None => return err(StatusCode::BAD_REQUEST, "invalid url"),
+    let (scheme, rest) = full.split_once("://").ok_or("bad_url")?;
+    if scheme != "http" && scheme != "https" {
+        return Err("bad_url".into());
+    }
+    let authority_raw = rest.split('/').next().unwrap_or("");
+    if authority_raw.is_empty() {
+        return Err("bad_url".into());
+    }
+    // 去掉 userinfo（user:pass@host）
+    let authority = authority_raw
+        .rsplit('@')
+        .next()
+        .unwrap_or(authority_raw)
+        .to_string();
+    let root = format!("{}://{}", scheme, authority);
+    let tail = &rest[authority_raw.len()..];
+    let path_only = tail.split('?').next().unwrap_or(tail);
+    let dir = match path_only.rfind('/') {
+        Some(i) => format!("{}{}", root, &path_only[..=i]),
+        None => format!("{}/", root),
     };
-    let base = format!("{}://{}", scheme, host);
+    let page_url = format!("{}{}", root, tail.split('#').next().unwrap_or(tail));
+    Ok(IconTarget {
+        page_url,
+        root,
+        scheme: scheme.to_string(),
+        dir,
+    })
+}
 
-    let result = match blocking(move || fetch_icon_blocking(&raw, &scheme, &base)).await {
+/// 取 URL 所在目录（保留末尾 /），跳过 scheme 的 "//"。
+fn url_dir(url: &str) -> String {
+    let u = url
+        .split('?')
+        .next()
+        .unwrap_or(url)
+        .split('#')
+        .next()
+        .unwrap_or(url);
+    let start = u.find("://").map(|i| i + 3).unwrap_or(0);
+    match u[start..].rfind('/') {
+        Some(rel) => u[..=start + rel].to_string(),
+        None => format!("{}/", u),
+    }
+}
+
+/// 把 <link href> / <base href> 归一成绝对 URL。
+fn absolutize_icon_href(href: &str, t: &IconTarget, base_dir: &str) -> Option<String> {
+    let h = href.trim();
+    if h.is_empty() || h.starts_with("data:") || h.starts_with("javascript:") {
+        return None;
+    }
+    if h.starts_with("http://") || h.starts_with("https://") {
+        return Some(h.to_string());
+    }
+    if h.starts_with("//") {
+        return Some(format!("{}:{}", t.scheme, h));
+    }
+    if h.starts_with('/') {
+        return Some(format!("{}{}", t.root, h));
+    }
+    Some(format!("{}{}", base_dir, h))
+}
+
+/// 正则捕获里取第一个有值的分组（跳过 group 0）。
+fn icon_attr(caps: &regex::Captures) -> &str {
+    for i in 1..caps.len() {
+        if let Some(m) = caps.get(i) {
+            return m.as_str();
+        }
+    }
+    ""
+}
+
+fn push_unique(v: &mut Vec<String>, s: String) {
+    if !v.contains(&s) {
+        v.push(s);
+    }
+}
+
+/// 从首页 HTML 提取所有 <link rel~=icon> 的绝对地址（按出现顺序）。
+fn extract_icon_links(html: &str, t: &IconTarget) -> Vec<String> {
+    let link_re = regex::Regex::new(r"(?is)<link\b[^>]*>").unwrap();
+    let base_re = regex::Regex::new(r"(?is)<base\b[^>]*>").unwrap();
+    let rel_re =
+        regex::Regex::new(r#"(?i)\brel\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#).unwrap();
+    let href_re =
+        regex::Regex::new(r#"(?i)\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#).unwrap();
+
+    let base_dir = base_re
+        .find(html)
+        .and_then(|m| href_re.captures(m.as_str()))
+        .and_then(|c| absolutize_icon_href(icon_attr(&c), t, &t.dir))
+        .map(|u| url_dir(&u))
+        .unwrap_or_else(|| t.dir.clone());
+
+    let mut out = Vec::new();
+    for m in link_re.find_iter(html) {
+        let tag = m.as_str();
+        let rel = match rel_re.captures(tag) {
+            Some(c) => icon_attr(&c).to_ascii_lowercase(),
+            None => continue,
+        };
+        let is_icon = rel.split_whitespace().any(|v| {
+            matches!(
+                v,
+                "icon"
+                    | "shortcut"
+                    | "apple-touch-icon"
+                    | "apple-touch-icon-precomposed"
+                    | "mask-icon"
+                    | "fluid-icon"
+            )
+        });
+        if !is_icon {
+            continue;
+        }
+        let href = match href_re.captures(tag) {
+            Some(c) => icon_attr(&c).to_string(),
+            None => continue,
+        };
+        if let Some(u) = absolutize_icon_href(&href, t, &base_dir) {
+            push_unique(&mut out, u);
+        }
+    }
+    out
+}
+
+/// 按内容魔数判断是否为真实图片，返回扩展名。
+fn sniff_image(b: &[u8]) -> Option<&'static str> {
+    if b.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some("png");
+    }
+    if b.starts_with(b"\xFF\xD8\xFF") {
+        return Some("jpg");
+    }
+    if b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a") {
+        return Some("gif");
+    }
+    if b.len() >= 12
+        && b.get(..4) == Some(b"RIFF".as_slice())
+        && b.get(8..12) == Some(b"WEBP".as_slice())
+    {
+        return Some("webp");
+    }
+    if b.starts_with(b"\x00\x00\x01\x00") {
+        return Some("ico");
+    }
+    if b.starts_with(b"BM") {
+        return Some("bmp");
+    }
+    if b.len() >= 12 && b.get(4..8) == Some(b"ftyp".as_slice()) {
+        return Some("avif");
+    }
+    let head = String::from_utf8_lossy(&b[..b.len().min(1024)]).to_ascii_lowercase();
+    if head.contains("<svg") {
+        return Some("svg");
+    }
+    None
+}
+
+/// 请求候选地址，仅接受 2xx 且内容确实是图片的响应。
+fn fetch_icon_bytes(agent: &ureq::Agent, url: &str) -> Option<(&'static str, Vec<u8>)> {
+    use std::io::Read;
+    const MAX: usize = 2 * 1024 * 1024;
+    let resp = agent
+        .get(url)
+        .set(
+            "Accept",
+            "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        )
+        .call()
+        .ok()?;
+    if !(200..300).contains(&resp.status()) {
+        return None;
+    }
+    let ct = resp
+        .header("Content-Type")
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ct.starts_with("text/html") {
+        return None;
+    }
+    let mut buf = Vec::new();
+    resp.into_reader()
+        .take(MAX as u64 + 1)
+        .read_to_end(&mut buf)
+        .ok()?;
+    if buf.is_empty() || buf.len() > MAX {
+        return None;
+    }
+    Some((sniff_image(&buf)?, buf))
+}
+
+fn fetch_icon_blocking(t: &IconTarget, uploads_dir: &FsPath) -> Result<String, String> {
+    use std::io::Read;
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(6))
+        .redirects(5)
+        .user_agent("Mozilla/5.0 (compatible; HelmIconFetcher/1.0)")
+        .build();
+
+    // 1) 抓首页 HTML，提取 <link rel~icon> 的 href（含 <base href> 基准）
+    let mut candidates: Vec<String> = Vec::new();
+    if let Ok(resp) = agent.get(&t.page_url).call() {
+        if (200..300).contains(&resp.status()) {
+            let mut buf = Vec::new();
+            if resp
+                .into_reader()
+                .take(256 * 1024)
+                .read_to_end(&mut buf)
+                .is_ok()
+            {
+                let html = String::from_utf8_lossy(&buf).into_owned();
+                candidates = extract_icon_links(&html, t);
+            }
+        }
+    }
+
+    // 2) 追加常见兜底路径（根路径 + 子路径，去重）
+    for p in [
+        "/favicon.ico",
+        "/favicon.png",
+        "/favicon.svg",
+        "/apple-touch-icon.png",
+        "/apple-touch-icon-precomposed.png",
+    ] {
+        push_unique(&mut candidates, format!("{}{}", t.root, p));
+    }
+    if t.dir != format!("{}/", t.root) {
+        for p in ["favicon.ico", "favicon.png", "favicon.svg"] {
+            push_unique(&mut candidates, format!("{}{}", t.dir, p));
+        }
+    }
+
+    // 3) 逐个验证，取第一个真实图片落盘到 uploads（同源，避免 Mixed Content）
+    for url in &candidates {
+        if let Some((ext, bytes)) = fetch_icon_bytes(&agent, url) {
+            let name = format!("ico_{}.{}", random_hex8(), ext);
+            if std::fs::write(uploads_dir.join(&name), &bytes).is_ok() {
+                return Ok(format!("/uploads/{}", url_encode(&name)));
+            }
+        }
+    }
+    Err("icon_not_found".into())
+}
+
+pub async fn fetch_icon(State(state): State<Arc<AppState>>, req: Request) -> Response {
+    let raw = query_param(&req, "url").unwrap_or_default();
+    let page_scheme = query_param(&req, "scheme").unwrap_or_default();
+    let page_scheme = if page_scheme == "https" { "https" } else { "http" };
+    let target = match parse_icon_target(&raw, page_scheme) {
+        Ok(t) => t,
+        Err(e) => return err(StatusCode::BAD_REQUEST, &e),
+    };
+    let uploads_dir = state.uploads_dir.clone();
+    let result = match blocking(move || fetch_icon_blocking(&target, &uploads_dir)).await {
         Ok(v) => v,
         Err(r) => return r,
     };
-    ok(json!({ "icon": result }))
-}
-
-fn fetch_icon_blocking(raw_url: &str, scheme: &str, base: &str) -> String {
-    let mut icon_url = String::new();
-    if let Ok(resp) = ureq::get(raw_url).timeout(Duration::from_secs(6)).call() {
-        use std::io::Read;
-        let mut buf = Vec::new();
-        let mut reader = resp.into_reader().take(256 * 1024);
-        let _ = reader.read_to_end(&mut buf);
-        let html = String::from_utf8_lossy(&buf).into_owned();
-
-        let re1 = regex::Regex::new(
-            r#"(?i)<link[^>]+rel=["'](?:shortcut icon|icon|apple-touch-icon)["'][^>]+href=["']([^"']+)["']"#,
-        )
-        .unwrap();
-        let re2 = regex::Regex::new(
-            r#"(?i)<link[^>]+href=["']([^"']+)["'][^>]+rel=["'](?:shortcut icon|icon|apple-touch-icon)["']"#,
-        )
-        .unwrap();
-        if let Some(m) = re1.captures(&html) {
-            icon_url = m.get(1).map(|x| x.as_str().to_string()).unwrap_or_default();
-        } else if let Some(m) = re2.captures(&html) {
-            icon_url = m.get(1).map(|x| x.as_str().to_string()).unwrap_or_default();
-        }
-    }
-
-    if !icon_url.is_empty() {
-        if icon_url.starts_with("//") {
-            format!("{}:{}", scheme, icon_url)
-        } else if icon_url.starts_with('/') {
-            format!("{}{}", base, icon_url)
-        } else if !icon_url.starts_with("http") {
-            format!("{}/{}", base, icon_url)
-        } else {
-            icon_url
-        }
-    } else {
-        format!("{}/favicon.ico", base)
+    match result {
+        Ok(url) => ok(json!({ "icon": url })),
+        Err(e) => err(StatusCode::BAD_GATEWAY, &e),
     }
 }
 

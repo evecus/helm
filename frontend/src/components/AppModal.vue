@@ -24,8 +24,8 @@
       <div class="fr">
         <label class="fl">{{ t('iconStyle') }}</label>
         <div class="itabs">
-          <button class="itab" :class="{ active: iconType === 'text' }" @click="iconType = 'text'">{{ t('textIcon') }}</button>
           <button class="itab" :class="{ active: iconType === 'image' }" @click="iconType = 'image'">{{ t('imageIcon') }}</button>
+          <button class="itab" :class="{ active: iconType === 'text' }" @click="iconType = 'text'">{{ t('textIcon') }}</button>
         </div>
         <div v-if="iconType === 'text'">
           <input type="text" class="fi2" v-model="iconTxt" :placeholder="t('iconPlaceholder')" maxlength="2" />
@@ -36,6 +36,7 @@
             {{ fetchingIcon ? '...' : '🔍' }}
           </button>
           <label class="upbtn" for="icon-file-inp">📁</label>
+          <button class="upbtn" @click="openPicker" :title="t('pickExistingBtn')">🖼️</button>
           <input type="file" id="icon-file-inp" accept="image/*" style="display:none" @change="uploadIcon" />
         </div>
       </div>
@@ -71,6 +72,27 @@
       </div>
     </div>
   </div>
+
+  <!-- 选择已上传图片：数据目录 uploads 下的图片预览 -->
+  <div class="picker-overlay" v-if="pickerVisible" @click.self="closePicker">
+    <div class="picker-modal">
+      <div class="modal-header">
+        <div class="modal-title">{{ t('pickExistingTitle') }}</div>
+        <button class="close-btn" @click="closePicker">✕</button>
+      </div>
+      <div v-if="pickerLoading" class="picker-empty">{{ t('pickerLoading') }}</div>
+      <div v-else-if="!pickerFiles.length" class="picker-empty">{{ t('pickExistingEmpty') }}</div>
+      <div v-else class="picker-grid">
+        <div class="picker-item" v-for="u in pickerFiles" :key="u" @click="pickFile(u)">
+          <img :src="u" :alt="u" @error="e => e.target.style.opacity = '.25'" />
+          <div class="picker-name" :title="u">{{ u.split('/').pop() }}</div>
+        </div>
+      </div>
+      <div class="mfooter">
+        <button class="btn btn-s" @click="closePicker">{{ t('cancelBtn') }}</button>
+      </div>
+    </div>
+  </div>
 </template>
 
 <script setup>
@@ -83,7 +105,7 @@ const emit = defineEmits(['saved', 'deleted', 'toast'])
 
 const visible = ref(false)
 const editId = ref(null)
-const iconType = ref('text')
+const iconType = ref('image')
 const iconTxt = ref('')
 const iconUrl = ref('')
 const appTitle = ref('')
@@ -91,6 +113,9 @@ const appUrlLan = ref('')
 const appUrlWan = ref('')
 const appOpen = ref('new_tab')
 const fetchingIcon = ref(false)
+const pickerVisible = ref(false)
+const pickerFiles = ref([])
+const pickerLoading = ref(false)
 
 // 地址处理：有协议头原样保存，无协议头用 // 前缀（继承当前页面协议）
 function normalizeUrl(url) {
@@ -109,15 +134,17 @@ const previewIconText = computed(() => {
 })
 
 function openAdd() {
+  closePicker()
   editId.value = null
-  iconType.value = 'text'; iconTxt.value = ''; iconUrl.value = ''
+  iconType.value = 'image'; iconTxt.value = ''; iconUrl.value = ''
   appTitle.value = ''; appUrlLan.value = ''; appUrlWan.value = ''; appOpen.value = 'new_tab'
   visible.value = true
 }
 
 function openEdit(app) {
+  closePicker()
   editId.value = app.id
-  iconType.value = app.icon_type || 'text'
+  iconType.value = app.icon_type || 'image'
   iconTxt.value = app.icon_text || ''
   iconUrl.value = app.icon_image || ''
   appTitle.value = app.title || ''
@@ -128,7 +155,30 @@ function openEdit(app) {
   visible.value = true
 }
 
-function close() { visible.value = false }
+function close() { visible.value = false; closePicker() }
+
+function closePicker() {
+  pickerVisible.value = false
+  pickerFiles.value = []
+  pickerLoading.value = false
+}
+
+async function openPicker() {
+  pickerVisible.value = true
+  pickerLoading.value = true
+  pickerFiles.value = []
+  try {
+    const d = await apiCall('/api/uploads')
+    pickerFiles.value = Array.isArray(d.files) ? d.files : []
+  } catch { emit('toast', t('pickExistingFail')) }
+  finally { pickerLoading.value = false }
+}
+
+function pickFile(url) {
+  iconUrl.value = url
+  closePicker()
+  emit('toast', t('pickExistingOk'))
+}
 
 async function save() {
   const title = appTitle.value.trim()
@@ -171,11 +221,13 @@ async function fetchIcon() {
   if (!addr) { emit('toast', t('fetchIconNoUrl')); return }
   fetchingIcon.value = true
   try {
-    const res = await fetch(`/api/fetch-icon?url=${encodeURIComponent(addr)}`)
-    const d = await res.json()
+    const scheme = location.protocol.replace(':', '')
+    const d = await apiCall(`/api/fetch-icon?url=${encodeURIComponent(addr)}&scheme=${encodeURIComponent(scheme)}`)
     if (d.icon) { iconUrl.value = d.icon; emit('toast', t('fetchIconOk')) }
     else emit('toast', t('fetchIconFail'))
-  } catch { emit('toast', t('fetchIconFail')) }
+  } catch (e) {
+    emit('toast', e.message === 'bad_url' ? t('fetchIconBadUrl') : t('fetchIconFail'))
+  }
   finally { fetchingIcon.value = false }
 }
 
@@ -228,4 +280,30 @@ defineExpose({ openAdd, openEdit })
 .upbtn:hover { border-color: var(--h1); color: var(--h1); }
 .url-hint { font-size: 11px; color: #94a3b8; margin: -8px 0 14px; line-height: 1.5; }
 .mfooter { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid #f5f3ff; }
+.picker-overlay {
+  position: fixed; inset: 0; z-index: 800;
+  background: rgba(0,0,0,.4); backdrop-filter: blur(6px);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.picker-modal {
+  background: white; border-radius: 22px; padding: 24px;
+  width: 520px; max-width: 100%; max-height: 85vh; overflow-y: auto;
+  box-shadow: 0 24px 64px rgba(168,85,247,.18); animation: pop-in .2s ease;
+  border: 1px solid rgba(168,85,247,.1);
+}
+.picker-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+  gap: 10px; max-height: 52vh; overflow-y: auto; padding: 2px;
+}
+.picker-item {
+  border: 2px solid transparent; border-radius: 12px; overflow: hidden;
+  background: #faf8ff; cursor: pointer; transition: all var(--tr);
+}
+.picker-item:hover { border-color: var(--h1); transform: translateY(-2px); box-shadow: 0 6px 16px rgba(168,85,247,.18); }
+.picker-item img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; }
+.picker-name {
+  font-size: 10px; color: #94a3b8; padding: 5px 6px; text-align: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.picker-empty { padding: 36px 12px; text-align: center; font-size: 13px; color: #94a3b8; }
 </style>
