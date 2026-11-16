@@ -194,7 +194,7 @@ defineExpose({ open, close })
 /* 移动端卡片（默认隐藏） */
 .mobile-body { display:none }
 .proc-cards { display:flex;flex-direction:column;gap:10px;padding:14px;min-width:0 }
-.pcard { background:#fff;border:1.5px solid rgba(99,102,241,.1);border-radius:16px;padding:14px 16px;box-shadow:0 2px 10px rgba(99,102,241,.06);min-width:0;overflow:hidden }
+.pcard { background:#fff;border:1.5px solid rgba(99,102,241,.1);border-radius:16px;padding:14px 16px;box-shadow:0 2px 10px rgba(99,102,241,.06);min-width:0;flex-shrink:0 }
 .pcard-head { display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;min-width:0;gap:8px }
 .pcard-left { display:flex;align-items:center;gap:8px;min-width:0;flex:1 }
 .pcard-right { display:flex;align-items:center;gap:8px;flex-shrink:0 }

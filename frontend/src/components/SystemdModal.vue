@@ -302,7 +302,7 @@ defineExpose({ open, close })
 /* 移动端卡片（默认隐藏） */
 .mobile-body { display:none }
 .svc-cards { display:flex;flex-direction:column;gap:10px;padding:14px;min-width:0 }
-.scard { background:#fff;border:1.5px solid rgba(99,102,241,.1);border-radius:16px;padding:14px 16px;box-shadow:0 2px 10px rgba(99,102,241,.06);cursor:pointer;min-width:0;overflow:hidden }
+.scard { background:#fff;border:1.5px solid rgba(99,102,241,.1);border-radius:16px;padding:14px 16px;box-shadow:0 2px 10px rgba(99,102,241,.06);cursor:pointer;min-width:0;flex-shrink:0 }
 .scard:active { background:#faf8ff }
 .scard-head { display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:6px;min-width:0 }
 .scard-name-wrap { flex:1;min-width:0 }
