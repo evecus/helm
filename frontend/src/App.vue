@@ -483,7 +483,7 @@ onUnmounted(() => { if (clkTimer) clearInterval(clkTimer) })
 .sort-bar { display: flex; margin-bottom: 14px; gap: 8px; flex-wrap: wrap; }
 .sort-btn { padding: 8px 18px; background: rgba(255,255,255,.88); color: #1e1b2e; border: none; border-radius: 10px; font-size: 13px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 5px; box-shadow: 0 4px 14px rgba(0,0,0,.14); transition: all var(--tr); }
 .sort-btn:hover { background: white; transform: translateY(-1px); }
-.apps-grid { display: flex; flex-wrap: wrap; justify-content: flex-start; }
+.apps-grid { display: flex; flex-wrap: wrap; justify-content: center; }
 .app-card { display: flex; flex-direction: column; align-items: center; gap: 9px; cursor: pointer; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .app-icon-wrap { overflow: hidden; transition: transform var(--tr), box-shadow var(--tr); box-shadow: 0 6px 20px rgba(0,0,0,.24), 0 1px 0 rgba(255,255,255,.2) inset; -webkit-touch-callout: none; }
 .app-card:not(.sort-mode):hover .app-icon-wrap { transform: translateY(-6px) scale(1.07); box-shadow: 0 16px 36px rgba(0,0,0,.32), 0 1px 0 rgba(255,255,255,.2) inset; }
