@@ -12,7 +12,7 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   BIN_NAME: helm
-  RELEASE_NAME: helm
+  RELEASE_NAME: Helm
 
 jobs:
   build:
@@ -72,7 +72,7 @@ jobs:
         run: |
           mkdir dist
           cp target/${{ matrix.target }}/release/${BIN_NAME} \
-             dist/${RELEASE_NAME}-${{ matrix.name }}
+             dist/${BIN_NAME}-${{ matrix.name }}
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
